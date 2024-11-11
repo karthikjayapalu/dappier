@@ -1,170 +1,93 @@
 import streamlit as st
-import sounddevice as sd
-import soundfile as sf
-import numpy as np
-import scipy.io.wavfile as wav
-import openai
+import tempfile
+import fitz  # PyMuPDF
 from langchain_openai import ChatOpenAI
+from langchain.prompts import PromptTemplate
 import os
-import io
-import time
-import soundfile as sf
-from openai import OpenAI
 
-client = OpenAI()
+# Set your OpenAI API key here
+os.environ["OPENAI_API_KEY"] = 'OPENAI_API_KEY'
 
-# Set OpenAI API key
-os.environ["OPENAI_API_KEY"] = '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'
 
-# Session state variables to control recording status
-if "recording" not in st.session_state:
-    st.session_state.recording = False
-if "audio_data" not in st.session_state:
-    st.session_state.audio_data = None
-if "responses" not in st.session_state:
-    st.session_state.responses = []
+# Function to generate insights based on context
+def generate_insights(resume_text, resume_links):
+    prompt_template = f"""
+    You are an experienced Technical Recruiter specializing in AI roles. 
+    Review the candidate's resume and extract key insights relevant to an AI engineering position.
 
-# Function to record audio using sounddevice
-def start_recording(file_path, duration=10, fs=44100, device_index=0):
-    st.session_state.recording = True
-    st.write(f"Recording Started....Duration is {duration} secs.")
-    audio_data = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16', device=device_index)
-    sd.wait()  # Wait until the recording is finished
-    st.session_state.recording = False
-    sf.write(file_path, audio_data, fs)
-    st.write(f"Recording complete. File saved at {file_path}")
+    Resume Details:
+    - Parsed Resume Text Content: {resume_text}
+    - Hyperlinked Information: {resume_links}
 
-    # Convert to BytesIO object in WAV format
-    audio_buffer = io.BytesIO()
-    wav.write(audio_buffer, fs, audio_data)
-    audio_buffer.seek(0)  # Ensure the buffer starts at the beginning
-    st.session_state.audio_data = audio_buffer
+    Please extract and organize the following information:
+    1. **Candidate Name**
+    2. **Educational Qualifications**
+    3. **Total Work Experience**
+    4. **Relevant AI Experience**
+    5. **Gaps in Employment**
+    6. **Publications**
+    7. **Professional Links**
+    8. **Other Noteworthy Details**
 
-# Function to transcribe audio using OpenAI's Whisper API
-# Function to transcribe audio using OpenAI's Whisper API
-def transcribe_audio(file_path):
-    with open(file_path, 'rb') as audio_file:
-        transcription = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            response_format="text"
-        )
-
-    # Print transcription to verify the format
-    st.write("Transcription response:", transcription)
-
-    # Check if transcription is a string or dictionary
-    if isinstance(transcription, dict) and 'text' in transcription:
-        return transcription['text']
-    elif isinstance(transcription, str):
-        return transcription  # Return the string if it's already in text format
-    else:
-        return "Error: Unexpected response format."
-
-# Function to generate questions based on insights and job description
-def generate_questions(insights, jd_text):
-    prompt = f"""
-    Based on the following candidate insights and job description, generate 3 interview questions:
-
-    Candidate Insights:
-    {insights}
-
-    Job Description:
-    {jd_text}
-
-    Output the questions in a list format.
+    Output the insights in a clear, summarized format.
     """
+    prompt = PromptTemplate.from_template(prompt_template)
     chat_model = ChatOpenAI(temperature=0, model="gpt-3.5-turbo")
-    response = chat_model.generate([prompt])
-    questions = response.generations[0][0].text.strip().split('\n')
-    return questions
+    response = chat_model.generate([prompt.format(resume_text=resume_text, resume_links=resume_links)])
+    insights = response.generations[0][0].text.strip()
+    return insights
 
-# Function to analyze the transcribed response
-def analyze_response(transcript):
-    prompt = f"""
-    Evaluate the following answer for its relevance, clarity, and technical depth in the context of an AI engineering interview question.
+# Function to parse PDF with text and hyperlinks
+def parse_pdf_with_links(uploaded_file):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+        temp_file.write(uploaded_file.read())
+        temp_file_path = temp_file.name
 
-    Candidate's Response: {transcript}
+    text_content = []
+    links_with_display_names = []
 
-    Provide analysis in short bullet points: 
-    - Relevance
-    - Clarity
-    - Technical depth
-    """
-    chat_model = ChatOpenAI(temperature=0, model="gpt-3.5-turbo")
-    response = chat_model.generate([prompt])
-    analysis = response.generations[0][0].text.strip()
-    return analysis
+    with fitz.open(temp_file_path) as doc:
+        for page_num, page in enumerate(doc):
+            text_content.append(page.get_text("text"))
+            for link in page.get_links():
+                if link.get("uri"):
+                    rect = fitz.Rect(link["from"])
+                    display_name = page.get_text("text", clip=rect).strip() or "Unnamed Link"
+                    links_with_display_names.append({
+                        "page": page_num + 1,
+                        "display_name": display_name,
+                        "uri": link["uri"],
+                        "rect": rect
+                    })
 
-st.title("Interview Preparation")
+    full_text = "\n".join(text_content)
+    return full_text, links_with_display_names
 
-# Display candidate insights and job description
-if "insights" in st.session_state and "jd_text" in st.session_state:
-    st.write("### Candidate Insights")
-    st.write(st.session_state.insights)
+# Initialize session states for page control
+if "page" not in st.session_state:
+    st.session_state.page = "upload"  # Set default page to "upload"
 
-    st.write("### Job Description")
-    st.write(st.session_state.jd_text)
+# Display upload page if "upload" page is active
+if st.session_state.page == "upload":
+    st.header("Resume Insights Generator")
+    resume_file = st.file_uploader("Upload Resume (PDF only)", type="pdf")
+    jd_file = st.file_uploader("Upload Job Description (PDF only)", type="pdf")
 
-    # Generate interview questions
-    if "questions" not in st.session_state:
-        st.session_state.questions = generate_questions(st.session_state.insights, st.session_state.jd_text)
+    if resume_file:
+        resume_text, resume_links = parse_pdf_with_links(resume_file)
+        formatted_links = [f"Page {link['page']}: [{link['display_name']}]({link['uri']}) at {link['rect']}" for link in resume_links]
+        st.session_state.resume_text = resume_text
+        st.session_state.resume_links = "\n".join(formatted_links)
 
-    st.write("### Interview Questions")
-    responses = []
-    for i, question in enumerate(st.session_state.questions, 1):
-        st.write(f"**Question {i}:** {question}")
+    if jd_file:
+        jd_text, jd_links = parse_pdf_with_links(jd_file)
+        st.session_state.jd_text = jd_text
 
-        # Record or input text response
-        col1, col2 = st.columns(2)
-        with col1:
-            file_path = f"recording_question_{i}.wav"
-            # Start and Stop buttons for recording
-            if st.button(f"Start Answer for Question {i}"):
-                st.write(f"Starting to record for Question {i}...")
-                start_recording(file_path=file_path, duration=10)
-
-            if st.button(f"Analyze Answer for Question {i}") and st.session_state.audio_data:
-                transcript = transcribe_audio(file_path)
-
-                # Display the transcribed response
-                st.write("### Transcription of Your Response")
-                st.write(transcript)
-
-                # Analyze the transcribed response
-                analysis = analyze_response(transcript)
-                st.write("### Analysis of Your Response")
-                st.write(analysis)
-                responses.append((transcript, analysis))
-
-        with col2:
-            text_response = st.text_area(f"Or type your answer for Question {i}")
-            if text_response:
-                st.write("### Analysis of Your Response")
-                analysis = analyze_response(text_response)
-                st.write(analysis)
-                responses.append((text_response, analysis))
-
-    # Save responses for interviewer insights
-    st.session_state.responses = responses
-
-# Submit interview and generate final interviewer insights
-if st.button("Submit Interview"):
-    insights_summary = "\n".join([response[1] for response in st.session_state.responses if response[1]])
-    prompt = f"""
-    Based on the following interview responses and analyses, provide a final summary for the interviewer:
-
-    Interview Responses and Analyses:
-    {insights_summary}
-
-    Generate a concise structured summary in bullet points:
-    - Overall performance
-    - Strengths
-    - Areas for improvement
-    """
-    chat_model = ChatOpenAI(temperature=0, model="gpt-3.5-turbo")
-    response = chat_model.generate([prompt])
-    final_insights = response.generations[0][0].text.strip()
-
-    st.write("### Interviewer's Summary and Insights")
-    st.write(final_insights)
+    if st.button("Generate Insights from Resume"):
+        if "resume_text" in st.session_state and "resume_links" in st.session_state:
+            insights = generate_insights(st.session_state.resume_text, st.session_state.resume_links)
+            st.session_state.insights = insights
+            st.write("### Extracted Insights from the Resume")
+            st.write(insights)
+        else:
+            st.error("Please upload a resume before generating insights.")
