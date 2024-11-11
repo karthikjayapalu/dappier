@@ -1,33 +1,65 @@
 import streamlit as st
 import sounddevice as sd
+import soundfile as sf
 import numpy as np
 import scipy.io.wavfile as wav
-import tempfile
+import openai
 from langchain_openai import ChatOpenAI
 import os
-import openai
+import io
+import time
+import soundfile as sf
+from openai import OpenAI
+
+client = OpenAI()
 
 # Set OpenAI API key
-os.environ["OPENAI_API_KEY"] = "OPENAI_API_KEY"
+os.environ["OPENAI_API_KEY"] = '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'
 
-# Function to capture audio input from user
-def record_audio(duration=30, fs=44100):
-    st.write(f"Recording... you have {duration} seconds.")
-    recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
-    sd.wait()
-    return np.squeeze(recording), fs
+# Session state variables to control recording status
+if "recording" not in st.session_state:
+    st.session_state.recording = False
+if "audio_data" not in st.session_state:
+    st.session_state.audio_data = None
+if "responses" not in st.session_state:
+    st.session_state.responses = []
 
-# Function to save audio as .wav file
-def save_audio(audio, fs, filename="user_audio.wav"):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-        wav.write(temp_file.name, fs, audio)
-        return temp_file.name
+# Function to record audio using sounddevice
+def start_recording(file_path, duration=10, fs=44100, device_index=0):
+    st.session_state.recording = True
+    st.write(f"Recording Started....Duration is {duration} secs.")
+    audio_data = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16', device=device_index)
+    sd.wait()  # Wait until the recording is finished
+    st.session_state.recording = False
+    sf.write(file_path, audio_data, fs)
+    st.write(f"Recording complete. File saved at {file_path}")
+
+    # Convert to BytesIO object in WAV format
+    audio_buffer = io.BytesIO()
+    wav.write(audio_buffer, fs, audio_data)
+    audio_buffer.seek(0)  # Ensure the buffer starts at the beginning
+    st.session_state.audio_data = audio_buffer
 
 # Function to transcribe audio using OpenAI's Whisper API
-def transcribe_audio(audio_path):
-    with open(audio_path, "rb") as audio_file:
-        transcript = openai.Audio.transcribe("whisper-1", audio_file)
-    return transcript["text"]
+# Function to transcribe audio using OpenAI's Whisper API
+def transcribe_audio(file_path):
+    with open(file_path, 'rb') as audio_file:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="text"
+        )
+
+    # Print transcription to verify the format
+    st.write("Transcription response:", transcription)
+
+    # Check if transcription is a string or dictionary
+    if isinstance(transcription, dict) and 'text' in transcription:
+        return transcription['text']
+    elif isinstance(transcription, str):
+        return transcription  # Return the string if it's already in text format
+    else:
+        return "Error: Unexpected response format."
 
 # Function to generate questions based on insights and job description
 def generate_questions(insights, jd_text):
@@ -86,21 +118,24 @@ if "insights" in st.session_state and "jd_text" in st.session_state:
         # Record or input text response
         col1, col2 = st.columns(2)
         with col1:
-            if st.button(f"Record Answer for Question {i}"):
-                audio, fs = record_audio(duration=30)
-                audio_path = save_audio(audio, fs, f"user_audio_q{i}.wav")
-                st.session_state[f"audio_path_q{i}"] = audio_path
-                st.write(f"Recording for Question {i} saved.")
-                st.audio(audio_path, format="audio/wav")
+            file_path = f"recording_question_{i}.wav"
+            # Start and Stop buttons for recording
+            if st.button(f"Start Answer for Question {i}"):
+                st.write(f"Starting to record for Question {i}...")
+                start_recording(file_path=file_path, duration=10)
 
-                # Transcribe and analyze if audio exists
-                transcript = transcribe_audio(audio_path)
+            if st.button(f"Analyze Answer for Question {i}") and st.session_state.audio_data:
+                transcript = transcribe_audio(file_path)
+
+                # Display the transcribed response
                 st.write("### Transcription of Your Response")
                 st.write(transcript)
+
+                # Analyze the transcribed response
                 analysis = analyze_response(transcript)
                 st.write("### Analysis of Your Response")
                 st.write(analysis)
-                responses.append((transcript, analysis, audio_path))
+                responses.append((transcript, analysis))
 
         with col2:
             text_response = st.text_area(f"Or type your answer for Question {i}")
@@ -108,7 +143,7 @@ if "insights" in st.session_state and "jd_text" in st.session_state:
                 st.write("### Analysis of Your Response")
                 analysis = analyze_response(text_response)
                 st.write(analysis)
-                responses.append((text_response, analysis, None))
+                responses.append((text_response, analysis))
 
     # Save responses for interviewer insights
     st.session_state.responses = responses
@@ -133,8 +168,3 @@ if st.button("Submit Interview"):
 
     st.write("### Interviewer's Summary and Insights")
     st.write(final_insights)
-
-    # Save audio files for record-keeping
-    for idx, (transcript, analysis, audio_path) in enumerate(st.session_state.responses):
-        if audio_path:
-            st.write(f"Audio saved for Question {idx + 1}: {audio_path}")
