@@ -8,7 +8,7 @@ import os
 import openai
 
 # Set OpenAI API key
-os.environ["OPENAI_API_KEY"] = 'your-api-key-here'
+os.environ["OPENAI_API_KEY"] = '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'
 
 # Function to capture audio input from user
 def record_audio(duration=30, fs=44100):
