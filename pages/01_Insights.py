@@ -6,7 +6,7 @@ from langchain.prompts import PromptTemplate
 import os
 
 # Set your OpenAI API key here
-os.environ["OPENAI_API_KEY"] = 'OPENAI_API_KEY'
+os.environ["OPENAI_API_KEY"] = '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'
 
 # Function to generate insights based on context
 def generate_insights(resume_text, resume_links):
